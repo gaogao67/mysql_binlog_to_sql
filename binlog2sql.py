@@ -7,7 +7,7 @@ import pymysql
 import codecs
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import QueryEvent, RotateEvent, FormatDescriptionEvent
-from mysql_binlog_to_sql.binlog2sql_util import command_line_args, concat_sql_from_binlog_event, create_unique_file, \
+from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, create_unique_file, \
     is_dml_event, event_type
 
 SPLIT_LINE_FLAG = "##=================SPLIT==LINE=====================##"
@@ -42,6 +42,7 @@ class Binlog2sql(object):
         else:
             self.stop_time = datetime.datetime.strptime('2999-12-31 00:00:00', "%Y-%m-%d %H:%M:%S")
         self.rollback_with_primary_key = rollback_with_primary_key
+        self.rollback_with_changed_value = rollback_with_changed_value
         self.only_schemas = only_schemas if only_schemas else None
         self.only_tables = only_tables if only_tables else None
         self.no_pk, self.flashback, self.stop_never, self.back_interval = (no_pk, flashback, stop_never, back_interval)
@@ -79,7 +80,6 @@ class Binlog2sql(object):
         flag_last_event = False
         e_start_pos, last_pos = stream.log_pos, stream.log_pos
         # to simplify code, we do not use flock for tmp_file.
-        file_name = '%s__%s' % (self.conn_setting['host'], self.conn_setting['port'])
         with self.connection as cursor:
             sql_list = []
             for binlog_event in stream:
@@ -109,9 +109,11 @@ class Binlog2sql(object):
                     e_start_pos = last_pos
 
                 if isinstance(binlog_event, QueryEvent) and not self.only_dml:
-                    sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event,
-                                                       flashback=self.flashback, no_pk=self.no_pk,
-                                                       rollback_with_primary_key=self.rollback_with_primary_key)
+                    sql = concat_sql_from_binlog_event(
+                        cursor=cursor, binlog_event=binlog_event,
+                        flashback=self.flashback, no_pk=self.no_pk,
+                        rollback_with_primary_key=self.rollback_with_primary_key,
+                        rollback_with_changed_value=self.rollback_with_changed_value)
                     if sql:
                         sql_list.append(sql)
                         if len(sql_list) == MAX_SQL_COUNT_PER_WRITE:
@@ -121,7 +123,8 @@ class Binlog2sql(object):
                         sql = concat_sql_from_binlog_event(
                             cursor=cursor, binlog_event=binlog_event, no_pk=self.no_pk,
                             row=row, flashback=self.flashback, e_start_pos=e_start_pos,
-                            rollback_with_primary_key=self.rollback_with_primary_key)
+                            rollback_with_primary_key=self.rollback_with_primary_key,
+                            rollback_with_changed_value=self.rollback_with_changed_value)
                         sql_list.append(sql)
                         if len(sql_list) == MAX_SQL_COUNT_PER_WRITE:
                             self.write_tmp_sql(sql_list=sql_list)
@@ -184,7 +187,7 @@ class Binlog2sql(object):
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
         tmp_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", str(rollback_file_id))
-        with codecs.open(tmp_rollback_sql_file, "w",'utf-8') as f_tmp:
+        with codecs.open(tmp_rollback_sql_file, "w", 'utf-8') as f_tmp:
             row_count = len(sql_item_list)
             for row_index in range(row_count):
                 row_item = sql_item_list[row_count - row_index - 1]
