@@ -159,7 +159,7 @@ class Binlog2sql(object):
         else:
             sql_file = self.execute_sql_file
         with codecs.open(sql_file, "a+", 'utf-8') as f_tmp:
-                f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
+            f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
 
     def write_tmp_sql(self, sql_list):
         print("{0} binlog process,please wait...".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -202,13 +202,36 @@ class Binlog2sql(object):
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
         tmp_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", str(rollback_file_id))
-        with codecs.open(tmp_rollback_sql_file, "w", 'utf-8') as f_tmp:
+        with codecs.open(tmp_rollback_sql_file, "a+", 'utf-8') as f_tmp:
             row_count = len(sql_item_list)
+            is_start_info = True
+            start_info = ""
+            end_info = ""
             for row_index in range(row_count):
                 row_item = sql_item_list[row_count - row_index - 1]
                 for line_item in row_item:
-                    f_tmp.writelines(line_item)
+                    if line_item.startswith("### start"):
+                        print("{0}:{1}".format(line_item, rollback_file_id))
+                        if is_start_info is True:
+                            start_info = line_item
+                            is_start_info = False
+                        end_info = line_item
+            self.write_rollback_info_file(
+                tmp_rollback_sql_file=tmp_rollback_sql_file,
+                start_info=start_info,
+                end_info=end_info
+            )
             self.rollback_sql_files.append(tmp_rollback_sql_file)
+
+    def write_rollback_info_file(self, tmp_rollback_sql_file, start_info, end_info):
+        info_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", "index")
+        with codecs.open(info_rollback_sql_file, "a+", 'utf-8') as f_tmp:
+            f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
+            f_tmp.writelines("### file path: {0}".format(tmp_rollback_sql_file) + "\n")
+            start_info = start_info.replace("###", "### first sql : ")
+            f_tmp.writelines(start_info)
+            end_info = end_info.replace("###", "### last sql  : ")
+            f_tmp.writelines(end_info)
 
 
 if __name__ == '__main__':
