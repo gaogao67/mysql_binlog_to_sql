@@ -81,6 +81,7 @@ class Binlog2sql(object):
 
         flag_last_event = False
         e_start_pos, last_pos = stream.log_pos, stream.log_pos
+        self.touch_tmp_sql()
         # to simplify code, we do not use flock for tmp_file.
         with self.connection as cursor:
             sql_list = []
@@ -151,6 +152,14 @@ class Binlog2sql(object):
                     print(tmp_file)
             print("===============================================")
         return True
+
+    def touch_tmp_sql(self):
+        if self.flashback:
+            sql_file = self.tmp_sql_file
+        else:
+            sql_file = self.execute_sql_file
+        with codecs.open(sql_file, "a+", 'utf-8') as f_tmp:
+                f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
 
     def write_tmp_sql(self, sql_list):
         print("{0} binlog process,please wait...".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))

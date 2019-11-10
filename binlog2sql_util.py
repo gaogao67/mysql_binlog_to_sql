@@ -92,7 +92,7 @@ def parse_args():
                         help='Flashback data to start_position of start_file', default=False)
     parser.add_argument('--rollback-with-primary-key', dest='rollback_with_primary_key', action='store_true',
                         help='Generate UPDATE/DELETE statement with primary key', default=False)
-    parser.add_argument('--rollback-with-changed_value', dest='rollback_with_changed_value', action='store_true',
+    parser.add_argument('--rollback-with-changed-value', dest='rollback_with_changed_value', action='store_true',
                         help='Generate UPDATE statement with changed value', default=False)
     parser.add_argument('--back-interval', dest='back_interval', type=float, default=1.0,
                         help="Sleep time between chunks of 1000 rollback sql. set it to 0 if do not need sleep")
