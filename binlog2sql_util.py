@@ -38,9 +38,9 @@ def create_unique_file(filename):
     log_dir = os.path.join(base_dir, "log")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-    execute_sql_file = os.path.join(log_dir, "{0}_{1}_executed.txt".format(filename, dt_string))
-    rollback_sql_file = os.path.join(log_dir, "{0}_{1}_rollback_[file_id].txt".format(filename, dt_string))
-    tmp_sql_file = os.path.join(log_dir, "{0}_{1}_tmp.txt".format(filename, dt_string))
+    execute_sql_file = os.path.join(log_dir, "{0}_{1}_executed.sql".format(filename, dt_string))
+    rollback_sql_file = os.path.join(log_dir, "{0}_{1}_rollback_[file_id].sql".format(filename, dt_string))
+    tmp_sql_file = os.path.join(log_dir, "{0}_{1}_tmp.sql".format(filename, dt_string))
     return execute_sql_file, rollback_sql_file, tmp_sql_file
 
 

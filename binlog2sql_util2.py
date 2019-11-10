@@ -172,7 +172,7 @@ class SqlRollbackPattern(object):
         if (self.rollback_with_primary_key is True) and (self.binlog_event.primary_key is not None):
             primary_key_dict = dict()
             for primary_key_item in self.get_primary_key_list():
-                primary_key_dict[primary_key_item] = self.row['values'][primary_key_item]
+                primary_key_dict[primary_key_item] = self.row['after_values'][primary_key_item]
             where_items = primary_key_dict
         else:
             where_items = self.row['after_values']

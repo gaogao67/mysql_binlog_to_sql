@@ -12,7 +12,7 @@ from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, cre
 
 SPLIT_LINE_FLAG = "##=================SPLIT==LINE=====================##"
 MAX_SQL_COUNT_PER_FILE = 10000
-MAX_SQL_COUNT_PER_WRITE = 1000
+MAX_SQL_COUNT_PER_WRITE = 10000
 
 
 class Binlog2sql(object):
@@ -43,18 +43,20 @@ class Binlog2sql(object):
             self.stop_time = datetime.datetime.strptime('2999-12-31 00:00:00', "%Y-%m-%d %H:%M:%S")
         self.rollback_with_primary_key = rollback_with_primary_key
         self.rollback_with_changed_value = rollback_with_changed_value
+
         self.only_schemas = only_schemas if only_schemas else None
         self.only_tables = only_tables if only_tables else None
         self.no_pk, self.flashback, self.stop_never, self.back_interval = (no_pk, flashback, stop_never, back_interval)
         self.only_dml = only_dml
         self.sql_type = [t.upper() for t in sql_type] if sql_type else []
         self.binlogList = []
-        file_name = '%s__%s' % (self.conn_setting['host'], self.conn_setting['port'])
+        file_name = '%s_%s' % (self.conn_setting['host'], self.conn_setting['port'])
         self.connection = pymysql.connect(**self.conn_setting)
         execute_sql_file, rollback_sql_file, tmp_sql_file = create_unique_file(file_name)
         self.execute_sql_file = execute_sql_file
         self.rollback_sql_file = rollback_sql_file
         self.tmp_sql_file = tmp_sql_file
+        self.rollback_sql_files = list()
         with self.connection as cursor:
             cursor.execute("SHOW MASTER STATUS")
             self.eof_file, self.eof_pos = cursor.fetchone()[:2]
@@ -140,10 +142,13 @@ class Binlog2sql(object):
             if self.flashback:
                 self.write_rollback_sql()
             print("===============================================")
-            if self.flashback:
-                print("执行脚本文件：{0}".format(self.execute_sql_file))
+            if not self.flashback:
+                print("执行脚本文件：\n{0}".format(self.execute_sql_file))
             else:
-                print("回滚脚本文件:{0}".format(self.rollback_sql_file))
+                print("回滚脚本文件:")
+                new_file_list = list(reversed(self.rollback_sql_files))
+                for tmp_file in new_file_list:
+                    print(tmp_file)
             print("===============================================")
         return True
 
@@ -169,8 +174,9 @@ class Binlog2sql(object):
                 if lines:
                     for line in lines:
                         if str(line).strip() == SPLIT_LINE_FLAG:
+                            sql_item.append("\n")
                             sql_item_list.append(sql_item)
-                            sql_item = [SPLIT_LINE_FLAG]
+                            sql_item = [SPLIT_LINE_FLAG + "\n"]
                             if len(sql_item_list) == MAX_SQL_COUNT_PER_FILE:
                                 self.write_rollback_tmp_file(rollback_file_id, sql_item_list)
                                 sql_item_list = []
@@ -192,7 +198,8 @@ class Binlog2sql(object):
             for row_index in range(row_count):
                 row_item = sql_item_list[row_count - row_index - 1]
                 for line_item in row_item:
-                    f_tmp.writelines(line_item + "\n")
+                    f_tmp.writelines(line_item)
+            self.rollback_sql_files.append(tmp_rollback_sql_file)
 
 
 if __name__ == '__main__':
@@ -203,5 +210,6 @@ if __name__ == '__main__':
                             stop_time=args.stop_time, only_schemas=args.databases, only_tables=args.tables,
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
                             back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type,
-                            rollback_with_primary_key=args.rollback_with_primary_key)
+                            rollback_with_primary_key=args.rollback_with_primary_key,
+                            rollback_with_changed_value=args.rollback_with_changed_value)
     binlog2sql.process_binlog()
