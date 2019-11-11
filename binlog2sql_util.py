@@ -14,6 +14,7 @@ from pymysqlreplication.row_event import (
     UpdateRowsEvent,
     DeleteRowsEvent,
 )
+from binlog2sql_util2 import SqlExecutePattern, SqlRollbackPattern, RowValueFormatter
 
 if sys.version > '3':
     PY3PLUS = True
@@ -37,9 +38,9 @@ def create_unique_file(filename):
     log_dir = os.path.join(base_dir, "log")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-    execute_sql_file = os.path.join(log_dir, "{0}_{1}_executed.txt".format(filename, dt_string))
-    rollback_sql_file = os.path.join(log_dir, "{0}_{1}_rollback_[file_id].txt".format(filename, dt_string))
-    tmp_sql_file = os.path.join(log_dir, "{0}_{1}_tmp.txt".format(filename, dt_string))
+    execute_sql_file = os.path.join(log_dir, "{0}_{1}_executed.sql".format(filename, dt_string))
+    rollback_sql_file = os.path.join(log_dir, "{0}_{1}_rollback_[file_id].sql".format(filename, dt_string))
+    tmp_sql_file = os.path.join(log_dir, "{0}_{1}_tmp.sql".format(filename, dt_string))
     return execute_sql_file, rollback_sql_file, tmp_sql_file
 
 
@@ -91,7 +92,7 @@ def parse_args():
                         help='Flashback data to start_position of start_file', default=False)
     parser.add_argument('--rollback-with-primary-key', dest='rollback_with_primary_key', action='store_true',
                         help='Generate UPDATE/DELETE statement with primary key', default=False)
-    parser.add_argument('--rollback-with-changed_value', dest='rollback_with_changed_value', action='store_true',
+    parser.add_argument('--rollback-with-changed-value', dest='rollback_with_changed_value', action='store_true',
                         help='Generate UPDATE statement with changed value', default=False)
     parser.add_argument('--back-interval', dest='back_interval', type=float, default=1.0,
                         help="Sleep time between chunks of 1000 rollback sql. set it to 0 if do not need sleep")
@@ -158,8 +159,10 @@ def event_type(event):
     return t
 
 
-def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=None, flashback=False,
-                                 no_pk=False, rollback_with_primary_key=False):
+def concat_sql_from_binlog_event(cursor, binlog_event, row=None,
+                                 e_start_pos=None, flashback=False,
+                                 no_pk=False, rollback_with_primary_key=False,
+                                 rollback_with_changed_value=False):
     if flashback and no_pk:
         raise ValueError('only one of flashback or no_pk can be True')
     if not (isinstance(binlog_event, WriteRowsEvent) or isinstance(binlog_event, UpdateRowsEvent)
@@ -170,22 +173,14 @@ def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=Non
     if isinstance(binlog_event, WriteRowsEvent) or isinstance(binlog_event, UpdateRowsEvent) \
             or isinstance(binlog_event, DeleteRowsEvent):
         pattern = generate_sql_pattern(
-            binlog_event, row=row, flashback=flashback,
-            no_pk=no_pk, rollback_with_primary_key=rollback_with_primary_key)
+            binlog_event, row=row,
+            flashback=flashback,no_pk=no_pk,
+            rollback_with_primary_key=rollback_with_primary_key,
+            rollback_with_changed_value=rollback_with_changed_value
+        )
         new_values_list = []
         for value_item in pattern['values']:
-            if type(value_item) == list:
-                # print(type(value_item))
-                # print(value_item)
-                new_value_item = format_list_bytes(list_item=value_item)
-                new_values_list.append(json.dumps(new_value_item))
-            elif type(value_item) == dict:
-                new_value_item = format_dict_bytes(dict_item=value_item)
-                new_values_list.append(json.dumps(new_value_item))
-            elif type(value_item) == str:
-                new_values_list.append(value_item)
-            else:
-                new_values_list.append(value_item)
+            new_values_list.append(RowValueFormatter.format_row_value(value_item))
         pattern['values'] = new_values_list
         sql = sql + cursor.mogrify(pattern['template'], pattern['values'])
         time = datetime.datetime.fromtimestamp(binlog_event.timestamp)
@@ -198,151 +193,25 @@ def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=Non
     return sql
 
 
-def format_list_bytes(list_item):
-    new_list = []
-    for sub_item in list_item:
-        if type(sub_item) == bytes:
-            new_sub_item = str(sub_item, "utf8")
-        elif type(sub_item) == dict:
-            new_sub_item = format_dict_bytes(sub_item)
-        elif type(sub_item) == list:
-            new_sub_item = format_list_bytes(sub_item)
-        else:
-            new_sub_item = sub_item
-        new_list.append(new_sub_item)
-    return new_list
-
-
-def format_dict_bytes(dict_item):
-    new_dict = dict()
-    for sub_item in dict_item.items():
-        item_key, item_value = sub_item
-        if type(item_value) == bytes:
-            new_item_value = str(item_value, "utf8")
-        elif type(item_value) == dict:
-            new_item_value = format_dict_bytes(item_value)
-        elif type(item_value) == list:
-            new_item_value = format_list_bytes(item_value)
-        else:
-            new_item_value = item_value
-
-        if type(item_key) == bytes:
-            new_item_key = str(item_key, "utf8")
-        else:
-            new_item_key = item_key
-        new_dict[new_item_key] = new_item_value
-    return new_dict
-
-
-def generate_sql_pattern(binlog_event, row=None, flashback=False, no_pk=False, rollback_with_primary_key=False):
-    template = ''
-    values = []
+def generate_sql_pattern(binlog_event, row=None,
+                         flashback=False, no_pk=False,
+                         rollback_with_primary_key=False,
+                         rollback_with_changed_value=False):
     if flashback is True:
-        if (binlog_event.primary_key is None) or (not rollback_with_primary_key):
-            if isinstance(binlog_event, WriteRowsEvent):
-                template = 'DELETE FROM `{0}`.`{1}` WHERE {2} LIMIT 1;'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ' AND '.join(map(compare_items, row['values'].items()))
-                )
-                values = map(fix_object, row['values'].values())
-            elif isinstance(binlog_event, DeleteRowsEvent):
-                template = 'INSERT INTO `{0}`.`{1}`({2}) VALUES ({3});'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ', '.join(map(lambda key: '`%s`' % key, row['values'].keys())),
-                    ', '.join(['%s'] * len(row['values']))
-                )
-                values = map(fix_object, row['values'].values())
-            elif isinstance(binlog_event, UpdateRowsEvent):
-                template = 'UPDATE `{0}`.`{1}` SET {2} WHERE {3} LIMIT 1;'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ', '.join(['`%s`=%%s' % x for x in row['before_values'].keys()]),
-                    ' AND '.join(map(compare_items, row['after_values'].items())))
-                values = map(fix_object, list(row['before_values'].values()) + list(row['after_values'].values()))
-        else:
-            primary_key_list = []
-            if type(binlog_event.primary_key) == tuple:
-                for primary_key_item in binlog_event.primary_key:
-                    primary_key_list.append(str(primary_key_item))
-            else:
-                primary_key_list.append(str(binlog_event.primary_key))
-            primary_key_dict = dict()
-            if isinstance(binlog_event, WriteRowsEvent):
-                ## 将DELETE 修改为按照主键操作
-                for primary_key_item in primary_key_list:
-                    primary_key_dict[primary_key_item] = row['values'][primary_key_item]
-                template = 'DELETE FROM `{0}`.`{1}` WHERE {2} LIMIT 1;'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ' AND '.join(map(compare_items, primary_key_dict.items()))
-                )
-                values = map(fix_object, primary_key_dict.values())
-            elif isinstance(binlog_event, DeleteRowsEvent):
-                template = 'INSERT INTO `{0}`.`{1}`({2}) VALUES ({3});'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ', '.join(map(lambda key: '`%s`' % key, row['values'].keys())),
-                    ', '.join(['%s'] * len(row['values']))
-                )
-                values = map(fix_object, row['values'].values())
-            elif isinstance(binlog_event, UpdateRowsEvent):
-                for primary_key_item in primary_key_list:
-                    primary_key_dict[primary_key_item] = row['after_values'][primary_key_item]
-                template = 'UPDATE `{0}`.`{1}` SET {2} WHERE {3} LIMIT 1;'.format(
-                    binlog_event.schema, binlog_event.table,
-                    ', '.join(['`%s`=%%s' % x for x in row['before_values'].keys()]),
-                    ' AND '.join(map(compare_items, primary_key_dict.items())))
-                values = map(fix_object, list(row['before_values'].values()) + list(primary_key_dict.values()))
+        sql_pattern = SqlRollbackPattern(
+            binlog_event=binlog_event,
+            row=row,
+            flashback=flashback,
+            no_pk=no_pk,
+            rollback_with_primary_key=rollback_with_primary_key,
+            rollback_with_changed_value=rollback_with_changed_value
+        )
     else:
-        if isinstance(binlog_event, WriteRowsEvent):
-            if no_pk:
-                # print binlog_event.__dict__
-                # tableInfo = (binlog_event.table_map)[binlog_event.table_id]
-                # if tableInfo.primary_key:
-                #     row['values'].pop(tableInfo.primary_key)
-                if binlog_event.primary_key:
-                    row['values'].pop(binlog_event.primary_key)
-
-            template = 'INSERT INTO `{0}`.`{1}`({2}) VALUES ({3});'.format(
-                binlog_event.schema, binlog_event.table,
-                ', '.join(map(lambda key: '`%s`' % key, row['values'].keys())),
-                ', '.join(['%s'] * len(row['values']))
-            )
-            values = map(fix_object, row['values'].values())
-        elif isinstance(binlog_event, DeleteRowsEvent):
-            template = 'DELETE FROM `{0}`.`{1}` WHERE {2} LIMIT 1;'.format(
-                binlog_event.schema, binlog_event.table, ' AND '.join(map(compare_items, row['values'].items())))
-            values = map(fix_object, row['values'].values())
-        elif isinstance(binlog_event, UpdateRowsEvent):
-            template = 'UPDATE `{0}`.`{1}` SET {2} WHERE {3} LIMIT 1;'.format(
-                binlog_event.schema, binlog_event.table,
-                ', '.join(['`%s`=%%s' % k for k in row['after_values'].keys()]),
-                ' AND '.join(map(compare_items, row['before_values'].items()))
-            )
-            values = map(fix_object, list(row['after_values'].values()) + list(row['before_values'].values()))
-
-    return {'template': template, 'values': list(values)}
-
-# def reversed_lines(fin):
-#     """Generate the lines of file in reverse order."""
-#     part = ''
-#     for block in reversed_blocks(fin):
-#         print(type(block))
-#         print(block)
-#         block = str(block).encode("utf-8")
-#         print(block)
-#         for c in reversed(block):
-#             if c == '\n' and part:
-#                 yield part[::-1]
-#                 part = ''
-#                 print(c)
-#             part += chr(c)
-#     if part:
-#         yield part[::-1]
-
-# def reversed_blocks(fin, block_size=4096):
-#     """Generate blocks of file's contents in reverse order."""
-#     fin.seek(0, os.SEEK_END)
-#     here = fin.tell()
-#     while 0 < here:
-#         delta = min(block_size, here)
-#         here -= delta
-#         fin.seek(here, os.SEEK_SET)
-#         yield fin.read(delta)
+        sql_pattern = SqlExecutePattern(
+            binlog_event=binlog_event,
+            row=row,
+            flashback=flashback,
+            no_pk=no_pk,
+            rollback_with_primary_key=rollback_with_primary_key,
+            rollback_with_changed_value=rollback_with_changed_value)
+    return sql_pattern.get_sql_pattern()
