@@ -1,4 +1,4 @@
-基于binlog2sql改写。
+基于Python3+binlog2sql改写。
 
 # 彻底抛弃Python2,中文乱码问题太糟心
 
