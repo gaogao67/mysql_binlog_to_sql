@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-
 import sys
 import datetime
 import pymysql
@@ -12,6 +11,7 @@ from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, cre
     is_dml_event, event_type
 
 SPLIT_LINE_FLAG = "##=================SPLIT==LINE=====================##"
+SPLIT_TRAN_FLAG = "##=================NEW=TRANSACTION=================##"
 MAX_SQL_COUNT_PER_FILE = 10000
 MAX_SQL_COUNT_PER_WRITE = 10000
 
@@ -21,7 +21,8 @@ class Binlog2sql(object):
     def __init__(self, connection_settings, start_file=None, start_pos=None, end_file=None, end_pos=None,
                  start_time=None, stop_time=None, only_schemas=None, only_tables=None, no_pk=False,
                  flashback=False, stop_never=False, back_interval=1.0, only_dml=True, sql_type=None,
-                 rollback_with_primary_key=False, rollback_with_changed_value=False):
+                 rollback_with_primary_key=False, rollback_with_changed_value=False,
+                 pseudo_thread_id=0):
         """
         conn_setting: {'host': 127.0.0.1, 'port': 3306, 'user': user, 'passwd': passwd, 'charset': 'utf8'}
         """
@@ -34,6 +35,7 @@ class Binlog2sql(object):
         self.start_pos = start_pos if start_pos else 4  # use binlog v4
         self.end_file = end_file if end_file else start_file
         self.end_pos = end_pos
+        self.pseudo_thread_id = pseudo_thread_id
         if start_time:
             self.start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         else:
@@ -81,8 +83,9 @@ class Binlog2sql(object):
                                     only_tables=self.only_tables, resume_stream=True, blocking=True)
 
         flag_last_event = False
+        slave_proxy_id = 0
         e_start_pos, last_pos = stream.log_pos, stream.log_pos
-        self.touch_tmp_sql()
+        self.touch_tmp_sql_file()
         # to simplify code, we do not use flock for tmp_file.
         with self.connection as cursor:
             sql_list = []
@@ -111,7 +114,11 @@ class Binlog2sql(object):
                     #     raise ValueError('unknown binlog file or position')
                 if isinstance(binlog_event, QueryEvent) and binlog_event.query == 'BEGIN':
                     e_start_pos = last_pos
-
+                    slave_proxy_id = binlog_event.slave_proxy_id
+                    sql_list.append(SPLIT_TRAN_FLAG)
+                if self.pseudo_thread_id > 0:
+                    if self.pseudo_thread_id != slave_proxy_id:
+                        continue
                 if isinstance(binlog_event, QueryEvent) and not self.only_dml:
                     sql = concat_sql_from_binlog_event(
                         cursor=cursor, binlog_event=binlog_event,
@@ -142,7 +149,9 @@ class Binlog2sql(object):
             stream.close()
 
             if self.flashback:
-                self.write_rollback_sql()
+                self.create_rollback_sql()
+            else:
+                self.create_execute_sql()
             print("===============================================")
             if not self.flashback:
                 print("执行脚本文件：\n{0}".format(self.execute_sql_file))
@@ -154,27 +163,69 @@ class Binlog2sql(object):
             print("===============================================")
         return True
 
-    def touch_tmp_sql(self):
-        if self.flashback:
-            sql_file = self.tmp_sql_file
-        else:
-            sql_file = self.execute_sql_file
-        with codecs.open(sql_file, "a+", 'utf-8') as f_tmp:
+    def touch_tmp_sql_file(self):
+        """
+        创建临时文件并写入第一条事务标志和第一条分隔符
+        :return:
+        """
+        with codecs.open(self.tmp_sql_file, "a+", 'utf-8') as f_tmp:
+            f_tmp.writelines(SPLIT_TRAN_FLAG + "\n")
             f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
 
+    def touch_rollback_sub_file(self, rollback_file_id):
+        """
+        创建临时文件并写入第一条事务标志和第一条分隔符
+        :return:
+        """
+        tmp_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", str(rollback_file_id))
+        with codecs.open(tmp_rollback_sql_file, "a+", 'utf-8') as f_tmp:
+            print("touch file")
+            f_tmp.writelines(SPLIT_TRAN_FLAG + "\n")
+
     def write_tmp_sql(self, sql_list):
+        """
+        批量将缓存的SQL脚本写入到临时文件，两条SQL之间使用分隔符分割
+        :param sql_list: 
+        :return: 
+        """""
         print("{0} binlog process,please wait...".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        if self.flashback:
-            sql_file = self.tmp_sql_file
-        else:
-            sql_file = self.execute_sql_file
-        with codecs.open(sql_file, "a+", 'utf-8') as f_tmp:
+        with codecs.open(self.tmp_sql_file, "a+", 'utf-8') as f_tmp:
             for sql_item in sql_list:
                 f_tmp.writelines(sql_item)
                 f_tmp.writelines("\n" + SPLIT_LINE_FLAG + "\n")
 
-    def write_rollback_sql(self):
-        """print rollback sql from tmp_file"""
+    def create_execute_sql(self):
+        """
+        根据临时文件创建回滚脚本
+        :return:
+        """
+        with codecs.open(self.tmp_sql_file, "r", 'utf-8') as f_tmp:
+            sql_item_list = []
+            while True:
+                lines = f_tmp.readlines(MAX_SQL_COUNT_PER_WRITE)
+                if lines:
+                    for line in lines:
+                        if str(line).strip() == SPLIT_LINE_FLAG:
+                            sql_item_list.append("\n")
+                            if len(sql_item_list) == MAX_SQL_COUNT_PER_FILE:
+                                self.write_execute_file(sql_item_list)
+                                sql_item_list = []
+                        else:
+                            sql_item_list.append(line)
+                else:
+                    break
+            self.write_execute_file(sql_item_list)
+
+    def write_execute_file(self, sql_list):
+        with codecs.open(self.execute_sql_file, "a+", 'utf-8') as f_tmp:
+            for sql_item in sql_list:
+                f_tmp.writelines(sql_item)
+
+    def create_rollback_sql(self):
+        """
+        根据临时文件创建回滚脚本
+        :return:
+        """
         with codecs.open(self.tmp_sql_file, "r", 'utf-8') as f_tmp:
             sql_item = [SPLIT_LINE_FLAG]
             sql_item_list = []
@@ -184,20 +235,27 @@ class Binlog2sql(object):
                 if lines:
                     for line in lines:
                         if str(line).strip() == SPLIT_LINE_FLAG:
-                            sql_item.append("\n")
                             sql_item_list.append(sql_item)
-                            sql_item = [SPLIT_LINE_FLAG + "\n"]
+                            sql_item = [SPLIT_LINE_FLAG, "\n"]
                             if len(sql_item_list) == MAX_SQL_COUNT_PER_FILE:
-                                self.write_rollback_tmp_file(rollback_file_id, sql_item_list)
+                                self.touch_rollback_sub_file(rollback_file_id)
+                                self.write_rollback_sub_file(rollback_file_id, sql_item_list)
                                 sql_item_list = []
                                 rollback_file_id -= 1
                         else:
                             sql_item.append(line)
                 else:
                     break
-            self.write_rollback_tmp_file(rollback_file_id, sql_item_list)
+            self.touch_rollback_sub_file(rollback_file_id)
+            self.write_rollback_sub_file(rollback_file_id, sql_item_list)
 
-    def write_rollback_tmp_file(self, rollback_file_id, sql_item_list):
+    def write_rollback_sub_file(self, rollback_file_id, sql_item_list):
+        """
+        将拆分后的回滚SQL列表写入指定文件号的回滚文件
+        :param rollback_file_id:
+        :param sql_item_list:
+        :return:
+        """
         print(
             "{0} generate rollback script,please wait...".format(
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -211,8 +269,9 @@ class Binlog2sql(object):
             for row_index in range(row_count):
                 row_item = sql_item_list[row_count - row_index - 1]
                 for line_item in row_item:
+                    if line_item != SPLIT_LINE_FLAG:
+                        f_tmp.writelines(line_item)
                     if line_item.startswith("### start"):
-                        print("{0}:{1}".format(line_item, rollback_file_id))
                         if is_start_info is True:
                             start_info = line_item
                             is_start_info = False
@@ -225,6 +284,13 @@ class Binlog2sql(object):
             self.rollback_sql_files.append(tmp_rollback_sql_file)
 
     def write_rollback_info_file(self, tmp_rollback_sql_file, start_info, end_info):
+        """
+        将拆分后的回滚文件信息写入回滚索引文件
+        :param tmp_rollback_sql_file:
+        :param start_info:
+        :param end_info:
+        :return:
+        """
         info_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", "index")
         with codecs.open(info_rollback_sql_file, "a+", 'utf-8') as f_tmp:
             f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
@@ -244,5 +310,6 @@ if __name__ == '__main__':
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
                             back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type,
                             rollback_with_primary_key=args.rollback_with_primary_key,
-                            rollback_with_changed_value=args.rollback_with_changed_value)
+                            rollback_with_changed_value=args.rollback_with_changed_value,
+                            pseudo_thread_id=args.pseudo_thread_id)
     binlog2sql.process_binlog()

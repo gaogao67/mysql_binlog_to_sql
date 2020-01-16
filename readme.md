@@ -50,7 +50,7 @@ DELETE FROM `db002`.`tb001_01` WHERE `ID`=7646 LIMIT 1;
 
 # 新增参数rollback-with-changed-value，对于UPDATE类型回滚语句中SET部分仅包含数据变更过的字段。
 
-未设置rollback-with-primary-key参数生成的回滚语句为：
+未设置rollback-with-changed-value参数生成的回滚语句为：
 ```
 ##=================SPLIT==LINE=====================##
 ### start 429 end 8827 time 2019-11-03 23:43:55
@@ -62,3 +62,4 @@ UPDATE `db002`.`tb001` SET `ID`=20, `C1`=20, `DT`='2019-11-03 23:34:04', `C2`=20
 ### start 429 end 8827 time 2019-11-03 23:43:55
 UPDATE `db002`.`tb001` SET `DT`='2019-11-03 23:34:04', `c5`=NULL WHERE `ID`=20 LIMIT 1;
 ```
+## 新增参数pseudo-thread-id,限制导出指定thread_id的事件。

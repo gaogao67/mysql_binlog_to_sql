@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-
 import os
 import sys
 import argparse
@@ -97,6 +96,8 @@ def parse_args():
                         help='Generate UPDATE statement with changed value', default=False)
     parser.add_argument('--back-interval', dest='back_interval', type=float, default=1.0,
                         help="Sleep time between chunks of 1000 rollback sql. set it to 0 if do not need sleep")
+    parser.add_argument('--pseudo-thread-id', dest='pseudo_thread_id', type=int, default=0,
+                        help="the thread id which run in master server")
     return parser
 
 
