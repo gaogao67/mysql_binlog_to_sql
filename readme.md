@@ -63,3 +63,21 @@ UPDATE `db002`.`tb001` SET `ID`=20, `C1`=20, `DT`='2019-11-03 23:34:04', `C2`=20
 UPDATE `db002`.`tb001` SET `DT`='2019-11-03 23:34:04', `c5`=NULL WHERE `ID`=20 LIMIT 1;
 ```
 ## 新增参数pseudo-thread-id,限制导出指定thread_id的事件。
+
+## 用法
+```
+## 回滚DELETE操作
+python3 binlog2sql.py 
+--host="mysql_host" \
+--port=3306 \
+--user="user_name" \
+--password="user_password" \
+--start-file="mysql-bin.000005" \
+--start-position=746318512  \
+--databases "database_name" \
+--tables "table_name1" "table_name2"
+--start-datetime="2020-03-28 18:50:00" \
+--end-datetime="2020-03-28 18:50:00" \
+--sql-type="DELETE"
+--flashback 
+```
