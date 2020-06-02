@@ -78,6 +78,7 @@ python3 binlog2sql.py
 --tables "table_name1" "table_name2"
 --start-datetime="2020-03-28 18:50:00" \
 --end-datetime="2020-03-28 18:50:00" \
---sql-type="DELETE"
+--only-dml \
+--sql-type="DELETE" \
 --flashback 
 ```
