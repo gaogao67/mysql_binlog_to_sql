@@ -12,6 +12,7 @@ from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, cre
 
 SPLIT_LINE_FLAG = "##=================SPLIT==LINE=====================##"
 SPLIT_TRAN_FLAG = "##=================NEW=TRANSACTION=================##"
+EMPTY_LINE_FLAG = "\n"
 MAX_SQL_COUNT_PER_FILE = 10000
 MAX_SQL_COUNT_PER_WRITE = 10000
 
@@ -169,8 +170,8 @@ class Binlog2sql(object):
         :return:
         """
         with codecs.open(self.tmp_sql_file, "a+", 'utf-8') as f_tmp:
-            f_tmp.writelines(SPLIT_TRAN_FLAG + "\n")
-            f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
+            f_tmp.writelines(SPLIT_TRAN_FLAG + EMPTY_LINE_FLAG)
+            f_tmp.writelines(SPLIT_LINE_FLAG + EMPTY_LINE_FLAG)
 
     def touch_rollback_sub_file(self, rollback_file_id):
         """
@@ -180,7 +181,7 @@ class Binlog2sql(object):
         tmp_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", str(rollback_file_id))
         with codecs.open(tmp_rollback_sql_file, "a+", 'utf-8') as f_tmp:
             print("touch file")
-            f_tmp.writelines(SPLIT_TRAN_FLAG + "\n")
+            f_tmp.writelines(SPLIT_TRAN_FLAG + EMPTY_LINE_FLAG)
 
     def write_tmp_sql(self, sql_list):
         """
@@ -192,7 +193,7 @@ class Binlog2sql(object):
         with codecs.open(self.tmp_sql_file, "a+", 'utf-8') as f_tmp:
             for sql_item in sql_list:
                 f_tmp.writelines(sql_item)
-                f_tmp.writelines("\n" + SPLIT_LINE_FLAG + "\n")
+                f_tmp.writelines(EMPTY_LINE_FLAG + SPLIT_LINE_FLAG + EMPTY_LINE_FLAG)
 
     def create_execute_sql(self):
         """
@@ -203,15 +204,27 @@ class Binlog2sql(object):
             sql_item_list = []
             while True:
                 lines = f_tmp.readlines(MAX_SQL_COUNT_PER_WRITE)
+                sql_item = []
+                has_sql = True
                 if lines:
                     for line in lines:
-                        if str(line).strip() == SPLIT_LINE_FLAG:
-                            sql_item_list.append("\n")
+                        if line.startswith(SPLIT_LINE_FLAG):
+                            if self.get_sql_count(sql_item) > 0:
+                                sql_item_list.append(sql_item)
+                                sql_item = []
                             if len(sql_item_list) == MAX_SQL_COUNT_PER_FILE:
                                 self.write_execute_file(sql_item_list)
                                 sql_item_list = []
                         else:
-                            sql_item_list.append(line)
+                            if line.startswith(SPLIT_TRAN_FLAG):
+                                # 过滤掉多个空事务
+                                if has_sql:
+                                    sql_item.append(line)
+                                    has_sql = False
+                                else:
+                                    pass
+                            else:
+                                sql_item.append(line)
                 else:
                     break
             self.write_execute_file(sql_item_list)
@@ -219,7 +232,18 @@ class Binlog2sql(object):
     def write_execute_file(self, sql_list):
         with codecs.open(self.execute_sql_file, "a+", 'utf-8') as f_tmp:
             for sql_item in sql_list:
-                f_tmp.writelines(sql_item)
+                for sql_line in sql_item:
+                    f_tmp.writelines(sql_line)
+
+    def get_sql_count(self, row_item: list):
+        """
+        检查一组SQL中是否包含SQL
+        """
+        sql_count = 0
+        for line_item in row_item:
+            if str(line_item).replace(EMPTY_LINE_FLAG, "") not in (SPLIT_TRAN_FLAG, SPLIT_LINE_FLAG, ""):
+                sql_count += 1
+        return sql_count
 
     def create_rollback_sql(self):
         """
@@ -235,8 +259,10 @@ class Binlog2sql(object):
                 if lines:
                     for line in lines:
                         if str(line).strip() == SPLIT_LINE_FLAG:
-                            sql_item_list.append(sql_item)
-                            sql_item = [SPLIT_LINE_FLAG, "\n"]
+                            # 只有包含SQL语句的记录才会呗
+                            if self.get_sql_count(sql_item) > 0:
+                                sql_item_list.append(sql_item)
+                            sql_item = [SPLIT_LINE_FLAG, EMPTY_LINE_FLAG]
                             if len(sql_item_list) == MAX_SQL_COUNT_PER_FILE:
                                 self.touch_rollback_sub_file(rollback_file_id)
                                 self.write_rollback_sub_file(rollback_file_id, sql_item_list)
@@ -268,14 +294,15 @@ class Binlog2sql(object):
             end_info = ""
             for row_index in range(row_count):
                 row_item = sql_item_list[row_count - row_index - 1]
-                for line_item in row_item:
-                    if line_item != SPLIT_LINE_FLAG:
-                        f_tmp.writelines(line_item)
-                    if line_item.startswith("### start"):
-                        if is_start_info is True:
-                            start_info = line_item
-                            is_start_info = False
-                        end_info = line_item
+                if self.get_sql_count(row_item) > 0:
+                    for line_item in row_item:
+                        if line_item != SPLIT_LINE_FLAG:
+                            f_tmp.writelines(line_item)
+                        if line_item.startswith("### start"):
+                            if is_start_info is True:
+                                start_info = line_item
+                                is_start_info = False
+                            end_info = line_item
             self.write_rollback_info_file(
                 tmp_rollback_sql_file=tmp_rollback_sql_file,
                 start_info=start_info,
@@ -293,8 +320,8 @@ class Binlog2sql(object):
         """
         info_rollback_sql_file = str(self.rollback_sql_file).replace("[file_id]", "index")
         with codecs.open(info_rollback_sql_file, "a+", 'utf-8') as f_tmp:
-            f_tmp.writelines(SPLIT_LINE_FLAG + "\n")
-            f_tmp.writelines("### file path: {0}".format(tmp_rollback_sql_file) + "\n")
+            f_tmp.writelines(SPLIT_LINE_FLAG + EMPTY_LINE_FLAG)
+            f_tmp.writelines("### file path: {0}".format(tmp_rollback_sql_file) + EMPTY_LINE_FLAG)
             start_info = start_info.replace("###", "### first sql : ")
             f_tmp.writelines(start_info)
             end_info = end_info.replace("###", "### last sql  : ")
