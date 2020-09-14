@@ -87,6 +87,7 @@ class Binlog2sql(object):
         e_start_pos, last_pos = stream.log_pos, stream.log_pos
         self.touch_tmp_sql_file()
         # to simplify code, we do not use flock for tmp_file.
+        transaction_count = 0
         with self.connection as cursor:
             sql_list = []
             for binlog_event in stream:
@@ -114,8 +115,13 @@ class Binlog2sql(object):
                     #     raise ValueError('unknown binlog file or position')
                 if isinstance(binlog_event, QueryEvent) and binlog_event.query == 'BEGIN':
                     e_start_pos = last_pos
+                    transaction_count += 1
+                    if transaction_count % 100 == 0:
+                        print("process binlog at {}".format(last_pos))
                     slave_proxy_id = binlog_event.slave_proxy_id
-                    sql_list.append(SPLIT_TRAN_FLAG)
+                    if len(sql_list) == 0 or sql_list[-1] != SPLIT_TRAN_FLAG:
+                        sql_list.append(SPLIT_TRAN_FLAG)
+
                 if self.pseudo_thread_id > 0:
                     if self.pseudo_thread_id != slave_proxy_id:
                         continue
@@ -189,6 +195,7 @@ class Binlog2sql(object):
         :return: 
         """""
         print("{0} binlog process,please wait...".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        print("process item:{}".format(len(sql_list)))
         with codecs.open(self.tmp_sql_file, "a+", 'utf-8') as f_tmp:
             for sql_item in sql_list:
                 if self.get_sql_count(sql_item) > 0:
