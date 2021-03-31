@@ -82,3 +82,10 @@ python3 binlog2sql.py
 --sql-type="DELETE" \
 --flashback 
 ```
+
+## 相关问题
+错误消息：
+```SQL
+log event entry exceeded max_allowed_packet; Increase max_allowed_packet on master; 
+```
+根据上述错误，提示需要修改主库max_allowed_packet的参数，但实际是传入参数(--stop-position和--start-position)有问题导致，如无法确认位点，可以通过时间点来限制
